@@ -1,6 +1,7 @@
 numpy==1.26
 fastapi
 uvicorn
+sentence-transformers==5.4.1
 spacy==3.7.4
 chromadb
 spacy-transformers>=1.3.9
