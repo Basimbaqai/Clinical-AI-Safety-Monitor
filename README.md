@@ -9,7 +9,7 @@ CASM is designed as a 2-stage safety pipeline:
 1. **Claim extraction**  
    Convert an LLM response into atomic, structured clinical claims.
 2. **Knowledge verification**  
-   Validate verifiable claims using PubMed evidence, NLI classification, and openFDA adverse-event signals.
+   Validate verifiable claims using PubMed evidence, NLI classification, and OpenFDA adverse-event signals.
 
 ## Current project status
 
@@ -57,7 +57,7 @@ Clinical-AI-Safety-Monitor/
 - Retrieves semantic matches from Chroma.
 - Fetches PubMed abstracts when local evidence is insufficient.
 - Runs NLI classification over evidence.
-- Queries openFDA for adverse-event counts.
+- Queries OpenFDA for adverse-event counts.
 - Produces structured `EvidenceResult` outputs.
 
 ### Data models (`models/`)
