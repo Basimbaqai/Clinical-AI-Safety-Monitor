@@ -90,6 +90,7 @@ uv sync
 >
 > Typical model setup commands:
 > ```bash
+> pip install sentence-transformers==5.4.1
 > pip install scispacy==0.5.4
 > # if you have local model packages:
 > pip install en_core_med7_trf-3.4.2.1-py3-none-any.whl
