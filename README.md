@@ -1,217 +1,182 @@
 # Clinical AI Safety Monitor (CASM)
 
-CASM is a clinical-response safety checking project that is currently notebook-first and moving toward a packaged pipeline.
+CASM is a clinical response verification pipeline. It takes free-text clinical advice (for example, LLM output), extracts structured medical claims, and checks those claims against literature and safety signals.
 
-At a high level, the workflow is:
-1. Extract atomic clinical claims from LLM output.
-2. Route claims to external evidence sources (OpenFDA, PubMed).
-3. Verify support/contradiction with deterministic logic (and optionally NLI models).
+## What This Project Does
 
----
+- Extracts atomic claims from raw clinical text using a hybrid Med7 + scispaCy pipeline.
+- Classifies each claim type and decides whether verification is required.
+- Retrieves PubMed abstracts from a local Chroma vector store (and live-fetches from PubMed when needed).
+- Runs biomedical NLI (`SUPPORTED`, `CONTRADICTED`, `AMBIGUOUS`) against retrieved evidence.
+- Pulls openFDA adverse-event totals and serious-event counts for the primary drug.
+- Aggregates everything into structured JSON output.
 
-## Project status
+## System Diagram
 
-This repository is in active prototyping:
-- `CASM.ipynb` contains the main implemented claim extraction pipeline.
-- `test.ipynb` contains an end-to-end deterministic verification prototype (OpenFDA + PubMed query and parsing logic).
-- `biobert_test.ipynb` contains a biomedical NLI experiment using PubMedBERT fine-tuned for MNLI.
-- `main.py` currently exists but is empty.
-- `casm_verifier/` exists but is currently a scaffold (empty files/folders at the moment).
-- `tests/` exists but is currently empty.
 
----
+![System Diagram](docs/system-diagram.png)
 
-## Repository structure
+
+<br><br><br><br>
+
+## Project Structure
 
 ```text
 Clinical-AI-Safety-Monitor/
-  CASM.ipynb
-  biobert_test.ipynb
-  test.ipynb
   main.py
   pyproject.toml
   requirements
+  README.md
   en_core_med7_trf-3.4.2.1-py3-none-any.whl
   en_core_sci_md-0.5.4.tar.gz
-    
+  classifiers/
+    nli_classifier.py
+  clients/
+    chroma_store.py
+    openfda_client.py
+    pubmed_fetcher.py
+  models/
+    claim.py
+    evidence.py
+  pipeline/
+    claim_extractor.py
+    knowledge_verifier.py
+  utils/
+    aggregation.py
+    constants.py
+  data/
+    chroma_store/
+  outputs/
+    results.json
+  experiments/
+    CASM.ipynb
+    test.ipynb
+    biobert_test.ipynb
 ```
 
----
+## End-to-End Flow
 
-## Core components
+1. Input text is passed into `pipeline/claim_extractor.py`.
+2. Claims are extracted, typed, and marked with `requires_verification`.
+3. Verifiable claims go to `pipeline/knowledge_verifier.py`.
+4. Verifier queries `clients/chroma_store.py` for similar PubMed abstracts.
+5. If hits are below threshold, `clients/pubmed_fetcher.py` fetches and indexes fresh abstracts.
+6. `classifiers/nli_classifier.py` scores evidence against each claim.
+7. `clients/openfda_client.py` returns adverse-event totals for the drug.
+8. Verdicts and confidence are aggregated and exported as JSON by `main.py`.
 
-### 1) Claim Extractor (`CASM.ipynb`)
+## Key Modules
 
-`CASM.ipynb` implements a hybrid ensemble extractor (`ClaimExtractor`) that converts raw LLM responses into structured claim objects.
+- `main.py`: CLI entrypoint; runs demo scenarios or one custom response and saves JSON output.
+- `pipeline/claim_extractor.py`: Hybrid extractor (Med7 + scispaCy), sentence splitting, claim typing.
+- `pipeline/knowledge_verifier.py`: Verification orchestration (Chroma -> PubMed fallback -> NLI + openFDA -> aggregation).
+- `clients/chroma_store.py`: Embedding + semantic retrieval over persisted Chroma collection.
+- `clients/pubmed_fetcher.py`: NCBI E-utilities search/fetch and Chroma upsert.
+- `clients/openfda_client.py`: openFDA adverse event count queries.
+- `classifiers/nli_classifier.py`: PubMedBERT MNLI wrapper.
+- `models/claim.py`, `models/evidence.py`: Dataclasses/enums for pipeline IO.
+- `utils/constants.py`: Shared configuration/constants (paths, model names, API settings).
 
-Implemented design:
-- **Pipeline A (Med7, `en_core_med7_trf`)** for medication-centric entities:
-  - `DRUG`, `DOSAGE`, `STRENGTH`, `FORM`, `FREQUENCY`, `ROUTE`, `DURATION`
-- **Pipeline B (scispaCy, `en_core_sci_md`)** for disease/condition entities.
-- **Sentence splitting** using scispaCy sentence boundaries + conjunction splitting.
-- **Claim classification** via keyword scoring into:
-  - `DOSAGE_CLAIM`
-  - `DRUG_SAFETY_CLAIM`
-  - `DRUG_INTERACTION`
-  - `PROCEDURAL_CLAIM`
-  - `DIAGNOSIS_CLAIM`
-  - `POPULATION_CLAIM`
-  - `GENERAL_MEDICAL`
-- **Derived fields** extracted per claim:
-  - `drug_names`, `dosages`, `conditions`
-- **Output shape** (JSON serializable):
-  - `claim_id`, `claim_text`, `claim_type`, `entities`, `drug_names`, `dosages`, `conditions`, `requires_verification`, `confidence`
+## Installation
 
-Notes from current implementation:
-- GPU is auto-detected through `torch.cuda.is_available()` and `spacy.prefer_gpu()`.
-- There is an explicit note about potential Med7/spaCy version mismatch causing CPU fallback.
+The repository includes both `requirements` and `pyproject.toml`.
 
----
+### Option A (recommended): pip + requirements
 
-### 2) Deterministic verification prototype (`test.ipynb`)
+```powershell
+Set-Location "C:\Users\basim\PycharmProjects\Clinical-AI-Safety-Monitor"
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip setuptools wheel
+pip install -r requirements
+pip install .\en_core_sci_md-0.5.4.tar.gz
+```
 
-`test.ipynb` demonstrates verifier routing concepts with strict schemas and hard-coded routes.
-
-What is implemented in the notebook:
-- Pydantic models for claims and extracted entities.
-- OpenFDA query generation:
-  - `generate_openfda_query(drug, age)`
-  - target: adverse-event counts by reaction term.
-- PubMed query generation/parsing:
-  - `generate_pubmed_query(drug, condition, population)` via Entrez `esearch`
-  - PMID fetch helpers (`esummary`, `efetch`)
-  - XML parsing of article metadata/abstracts.
-- Simple routing logic:
-  - Dosage + age -> OpenFDA adverse events
-  - General medical claim -> PubMed literature retrieval
-- HTTP helper utilities (`requests`) with timeout/error handling examples.
-
-This notebook is the practical reference for the future packaged `Knowledge Verifier` module.
-
----
-
-### 3) Biomedical NLI experiment (`biobert_test.ipynb`)
-
-`biobert_test.ipynb` evaluates textual entailment/contradiction/neutral classification for clinical premise-hypothesis pairs.
-
-Implemented setup:
-- Model: `lighteternal/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext-finetuned-mnli`
-- Framework: Hugging Face `transformers` + PyTorch
-- Labels:
-  - `entailment`
-  - `neutral`
-  - `contradiction`
-- Includes a 20-case benchmark loop with accuracy reporting by label.
-
-This is currently an experiment notebook and not yet integrated into the main verifier flow.
-
----
-
-## Dependencies
-
-Current dependency declarations are split across:
-- `pyproject.toml`
-- `requirements`
-
-### Declared in `pyproject.toml`
-- `fastapi`
-- `ipykernel`
-- `numpy==1.26`
-- `setuptools`
-- `spacy==3.7.4`
-- `spacy-transformers`
-- `uvicorn`
-
-### Declared in `requirements`
-- `numpy==1.26`
-- `fastapi`
-- `uvicorn`
-- `spacy==3.7.4`
-- `chromadb`
-- `spacy-transformers`
-- `en_core_med7_trf-3.4.2.1-py3-none-any.whl`
-- `scispacy==0.5.4`
-
-### Also used in notebooks (install explicitly if needed)
-- `torch`
-- `requests`
-- `transformers`
-
----
-
-## Setup (Windows PowerShell)
+### Option B: uv + pyproject
 
 ```powershell
 Set-Location "C:\Users\basim\PycharmProjects\Clinical-AI-Safety-Monitor"
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-pip install -r requirements
-pip install torch requests transformers
+pip install uv
+uv sync
+pip install chromadb scispacy==0.5.4
 pip install .\en_core_med7_trf-3.4.2.1-py3-none-any.whl
 pip install .\en_core_sci_md-0.5.4.tar.gz
 ```
 
-If you use `pyproject.toml`/`uv` instead of `requirements`, keep versions aligned manually for now.
+## Run CASM
 
----
+### Demo mode (runs built-in scenarios)
 
-## How to run current work
-
-### Claim extraction (notebook)
-1. Open `CASM.ipynb`.
-2. Run cells top-to-bottom.
-3. Use `ClaimExtractor().extract_as_dict(llm_response=...)`.
-
-### Deterministic verification prototype (notebook)
-1. Open `test.ipynb`.
-2. Run the query generator + HTTP + XML parse cells.
-3. Review OpenFDA reactions and parsed PubMed abstracts.
-
-### Biomedical NLI benchmark (notebook)
-1. Open `biobert_test.ipynb`.
-2. Run all cells.
-3. Review overall and per-label accuracy.
-
----
-
-## Current architecture (as implemented)
-
-```text
-LLM response text
-  -> ClaimExtractor (CASM.ipynb)
-      -> structured claims (dict/dataclass)
-          -> deterministic routing prototype (test.ipynb)
-              -> OpenFDA adverse-event evidence
-              -> PubMed abstract evidence
-                  -> (planned) unified Knowledge Verifier output
-                      -> (optional) NLI calibration via PubMedBERT
+```powershell
+python main.py
 ```
 
----
+### Single custom response
 
-## Gaps and next steps
+```powershell
+python main.py --response "Prescribe Metformin 500mg twice daily." --out outputs\results.json
+```
 
-The repository already has useful building blocks, but these are still open:
-- Port notebook verifier logic into Python modules under `casm_verifier/`.
-- Implement a real `KnowledgeVerifier` class and route registry.
-- Add end-to-end CLI or script entrypoint in `main.py`.
-- Add automated tests under `tests/` for query builders, parsers, and routing.
-- Unify dependency management (choose one primary manifest strategy).
-- Integrate NLI experiment into verifier as optional scoring/calibration stage.
+### Useful flags
 
----
+- `--require-gpu`: fail fast if CUDA is unavailable.
+- `--top-k`: number of PubMed abstracts retrieved per claim.
+- `--min-hits`: minimum Chroma hits before triggering live PubMed fetch.
 
-## Troubleshooting notes
+## Output
 
-- **NumPy compatibility:** current notes indicate spaCy/thinc may require `numpy < 2`; this repo pins `numpy==1.26`.
-- **Med7 model + spaCy GPU behavior:** Med7 package version may not fully match newer spaCy internals, causing CPU fallback even when CUDA exists.
-- **API/network reliability:** OpenFDA and NCBI endpoints can rate limit or timeout; keep request timeouts and retries.
+By default, results are written to `outputs/results.json`.
 
----
+High-level output structure:
 
-## License / data use
+```json
+{
+  "custom": [
+    {
+      "claim_id": "claim_0",
+      "claim_text": "...",
+      "verdict": "SUPPORTED",
+      "confidence": 0.91,
+      "fda_count": 12345,
+      "fda_serious": 678,
+      "nli_scores": [0.9, 0.8],
+      "nli_verdicts": ["SUPPORTED", "AMBIGUOUS"],
+      "pubmed_hits": [{"pmid": "...", "title": "...", "distance": 0.12}],
+      "skipped": false,
+      "error": ""
+    }
+  ]
+}
+```
 
-No explicit license file is present in the repository yet. Add one before external distribution.
+## Data and External Services
 
-When using external APIs (OpenFDA, NCBI), follow each provider's usage policies and rate-limit guidance.
+- **ChromaDB**: local persistent vector store under `data/chroma_store/`.
+- **PubMed (NCBI E-utilities)**: used for live abstract retrieval.
+- **openFDA**: used for adverse-event counts.
+- **Hugging Face models**:
+  - Sentence embedding model: `pritamdeka/S-PubMedBert-MS-MARCO`
+  - NLI model: `lighteternal/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext-finetuned-mnli`
+
+## Notes and Troubleshooting
+
+- Keep `numpy==1.26` to avoid spaCy/thinc compatibility issues.
+- First run can be slow due to model downloads and index loading.
+- If no GPU is detected, the pipeline runs on CPU unless `--require-gpu` is set.
+- Network/API rate limits can affect PubMed/openFDA requests.
+- If you set `--out results.json`, ensure directory handling in your local `main.py` supports no parent folder.
+
+## Notebook Assets
+
+The `experiments/` notebooks are still useful for experimentation:
+
+- `experiments/CASM.ipynb`: extraction experiments.
+- `experiments/test.ipynb`: deterministic routing and API experiments.
+- `experiments/biobert_test.ipynb`: NLI model behavior checks.
+
+## License
+
+No license file is currently present. Add a `LICENSE` before external distribution.
